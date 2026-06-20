@@ -1,0 +1,23 @@
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  api_key_env: ANTHROPIC_API_KEY
+
+embeddings:
+  provider: anthropic
+  model: voyage-3
+
+qdrant:
+  host: localhost
+  port: 6333
+  collection: vulkanmind_chunks
+
+storage:
+  database_path: data/vulkanmind.sqlite3
+
+hardware_governor:
+  default_mode: NORMAL
+  max_compiler_timeout_seconds: 60
+
+self_update:
+  require_human_confirmation: true
