@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import structlog
 from pydantic import BaseModel, Field
 
+from agents.self_improvement.pattern_curator import PatternCurator
+from agents.self_improvement.prompt_refiner import PromptRefiner
 from agents.self_update.changelog import ChangelogStore
 from agents.self_update.monitors.khronos_monitor import KhronosMonitor, UpdateDiff
 from agents.self_update.monitors.research_monitor import poll_research_sources
@@ -36,3 +39,25 @@ def self_update_node(state: dict) -> dict:
         "pending_updates": store.pending_updates(),
         "agent_trace": trace,
     }
+
+
+def run_pattern_audit(
+    curator: PatternCurator,
+    refiner: PromptRefiner,
+) -> None:
+    logger = structlog.get_logger("vulkanmind.self_update.pattern_audit")
+    report = curator.run_weekly_audit()
+    proposals = refiner.analyse_failure_patterns(lookback_days=30)
+    refiner.save_proposals(proposals)
+    review_items = list(report.requires_human_review) + [proposal.proposal_id for proposal in proposals]
+    if review_items:
+        logger.warning(
+            "self_improvement_human_review_required",
+            review_items=review_items,
+            proposals=len(proposals),
+        )
+    logger.info(
+        "pattern_audit_completed",
+        report=report.model_dump(),
+        proposals=len(proposals),
+    )

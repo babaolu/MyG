@@ -2,29 +2,30 @@
 
 VulkanMind is a local multi-agent AI system for modern Vulkan graphics programming and high-performance C++ systems engineering. It orchestrates specialized agents for platform detection, knowledge retrieval, Vulkan-Hpp/VMA code generation, validation, debugging, and self-update monitoring.
 
-The implementation lives in `vulkanmind/` and is configured for Python 3.11+, `uv`, FastAPI, LangGraph, Claude API, Qdrant, SQLite, Pydantic, structlog, and optional native Vulkan/C++ validation tools.
+The implementation lives at the repository root and is configured for Python 3.11+, `uv`, FastAPI, LangGraph, Claude API, Qdrant, SQLite, Pydantic, structlog, and optional native Vulkan/C++ validation tools.
 
 ## Repository layout
 
 ```text
-vulkanmind/
-├── main.py
-├── pyproject.toml
-├── config.yaml
-├── docker-compose.yml
-├── orchestrator/
-│   ├── graph.py
-│   ├── router.py
-│   └── state.py
-├── agents/
-│   ├── platform_intelligence/
-│   ├── code_generation/
-│   ├── debugger/
-│   ├── knowledge_retrieval/
-│   └── self_update/
-├── tools/
-├── db/
-└── tests/
+main.py
+pyproject.toml
+config.yaml
+docker-compose.yml
+orchestrator/
+├── graph.py
+├── router.py
+└── state.py
+agents/
+├── platform_intelligence/
+├── code_generation/
+├── debugger/
+├── knowledge_retrieval/
+├── self_update/
+└── self_improvement/
+tools/
+db/
+tests/
+README.md
 ```
 
 ## Core architecture
@@ -126,6 +127,30 @@ Responsibilities:
 
 No self-update is applied automatically.
 
+## Self-Improvement Loop
+
+VulkanMind improves through structured agent-layer memory, not by changing the Claude model. Each completed code generation, validation, and debug cycle can produce an `ExecutionTrace`. Successful non-trivial debug cycles may be converted into reusable `VulkanSkill` objects, which are platform-tagged and injected into future sessions.
+
+The loop has four parts:
+
+- **Execution trace storage:** `db/execution_traces.py` records every complete cycle with platform context, validation result, matched bug pattern, active fix, and outcome.
+- **Skill extraction:** `agents/self_improvement/skill_extractor.py` extracts reusable Vulkan-Hpp/VMA fix procedures from successful multi-iteration debug sessions and writes them to `db/skill_writebacks.py`.
+- **Session memory injection:** `agents/self_improvement/memory_injector.py` injects trusted skills, recent same-platform fixes, and platform pattern hit rates into agent system prompts before RAG retrieval.
+- **Curation and prompt refinement:** `agents/self_improvement/pattern_curator.py` audits skills and patterns weekly, while `agents/self_improvement/prompt_refiner.py` proposes guarded prompt changes from recurring failures.
+
+Important human gates:
+
+- Prompt refinement proposals require explicit approval through `/skills/proposals/{proposal_id}/approve`.
+- Contradictory or low-performing skills are moved to review and require human confirmation.
+- Low-hit-rate skill-writeback patterns are marked for review and are never auto-retired.
+
+Useful endpoints:
+
+- `GET /skills` lists active skills, optionally filtered by `gpu_vendor`, `domain`, or `confidence`.
+- `GET /skills/trusted` lists high-confidence accumulated knowledge.
+- `GET /skills/review` shows skills under review, pending prompt proposals, and human review items.
+- `GET /skills/stats` shows total skills, trusted skills, total traces, success rate by platform, top resolved symptoms, and average iterations to resolve.
+
 ## Configuration
 
 Edit `config.yaml` before running:
@@ -154,6 +179,31 @@ hardware_governor:
 
 self_update:
   require_human_confirmation: true
+
+self_improvement:
+  enabled: true
+  skill_extraction:
+    min_iterations_to_extract: 2
+    min_confidence_to_inject: medium
+    max_skills_in_prompt: 5
+    max_tokens_for_memory: 2000
+  curation:
+    audit_schedule_days: 7
+    stale_threshold_days: 90
+    min_hit_rate_to_keep: 0.30
+    auto_promote_threshold: 3
+    require_human_review_below: 0.40
+  prompt_refinement:
+    enabled: true
+    min_failures_to_analyse: 5
+    min_confidence_to_propose: 0.70
+    lookback_days: 30
+    require_human_approval: true
+  memory_injection:
+    inject_trusted_skills: true
+    inject_recent_fixes: true
+    recent_fixes_limit: 10
+    inject_hit_rates: true
 ```
 
 Export the required API key before starting:
@@ -173,21 +223,18 @@ export OPENAI_API_KEY="..."
 Start Qdrant:
 
 ```bash
-cd vulkanmind
 docker compose up -d
 ```
 
 Install dependencies with `uv`:
 
 ```bash
-cd vulkanmind
 uv sync --extra dev
 ```
 
 Run the FastAPI service:
 
 ```bash
-cd vulkanmind
 uv run uvicorn main:app --reload
 ```
 
@@ -311,14 +358,12 @@ The hardware governor blocks compilation when thermal mode is `THERMAL_THROTTLE`
 Run the test suite:
 
 ```bash
-cd vulkanmind
 uv run pytest -q
 ```
 
 Run linting:
 
 ```bash
-cd vulkanmind
 uv run ruff check .
 ```
 

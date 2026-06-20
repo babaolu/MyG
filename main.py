@@ -11,10 +11,17 @@ import yaml
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+import agents.debugger.pattern_library as pattern_library
+from agents.self_improvement.memory_injector import MemoryInjector
+from agents.self_improvement.pattern_curator import PatternCurator
+from agents.self_improvement.prompt_refiner import PromptRefiner
+from agents.self_improvement.skill_extractor import SkillExtractor
 from db.bug_history import BugHistoryStore
 from db.build_queue_store import BuildQueueStore
+from db.execution_traces import ExecutionTraceStore
 from db.session_store import SessionStore
-from orchestrator.graph import build_graph
+from db.skill_writebacks import SkillStore
+from orchestrator.graph import build_graph, configure_self_improvement
 
 logger = structlog.get_logger("vulkanmind")
 
@@ -37,6 +44,14 @@ class UpdateConfirmationRequest(BaseModel):
     confirmed: bool
 
 
+class SkillRetireRequest(BaseModel):
+    reason: str
+
+
+class ProposalApprovalRequest(BaseModel):
+    confirmed: bool
+
+
 class MessageResponse(BaseModel):
     agent_response: dict[str, Any]
     generated_code: str | None = None
@@ -53,11 +68,33 @@ def load_config() -> dict[str, Any]:
     return yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
 
 
+def _anthropic_client():
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+    from anthropic import Anthropic
+
+    return Anthropic(api_key=api_key)
+
+
 config = load_config()
 storage_path = config.get("storage", {}).get("database_path", "data/vulkanmind.sqlite3")
 session_store = SessionStore(storage_path)
 bug_history_store = BugHistoryStore(storage_path)
 build_queue_store = BuildQueueStore(storage_path)
+trace_store = ExecutionTraceStore(storage_path)
+skill_store = SkillStore(storage_path)
+memory_injector = MemoryInjector(skill_store, trace_store)
+skill_extractor = SkillExtractor(_anthropic_client(), skill_store)
+prompt_refiner = PromptRefiner(_anthropic_client(), trace_store, skill_store)
+pattern_curator = PatternCurator(skill_store, trace_store, pattern_library)
+configure_self_improvement(
+    storage_path,
+    trace_store=trace_store,
+    skill_store=skill_store,
+    memory_injector=memory_injector,
+    skill_extractor=skill_extractor,
+)
 graph = build_graph(storage_path)
 app = FastAPI(title="VulkanMind", version="0.1.0")
 
@@ -150,6 +187,78 @@ def confirm_update(session_id: str, request: UpdateConfirmationRequest) -> dict[
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="update not found") from exc
     return {"session_id": session_id, "update": diff.model_dump()}
+
+
+@app.get("/skills")
+def skills(
+    gpu_vendor: str | None = None,
+    domain: str | None = None,
+    confidence: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "skills": [
+            skill.model_dump()
+            for skill in skill_store.get_all_active(
+                gpu_vendor=gpu_vendor,
+                domain=domain,
+                confidence=confidence,
+            )
+        ]
+    }
+
+
+@app.get("/skills/trusted")
+def trusted_skills() -> dict[str, Any]:
+    return {"skills": [skill.model_dump() for skill in skill_store.get_trusted_skills()]}
+
+
+@app.get("/skills/review")
+def skills_review() -> dict[str, Any]:
+    return {
+        "skills_under_review": [
+            skill.model_dump()
+            for skill in skill_store.get_all_active()
+            if skill.status == "under_review"
+        ],
+        "pending_proposals": [
+            proposal.model_dump()
+            for proposal in prompt_refiner.get_pending_proposals()
+        ],
+        "human_review": skill_store.get_human_review(),
+    }
+
+
+@app.post("/skills/{skill_id}/retire")
+def retire_skill(skill_id: str, request: SkillRetireRequest) -> dict[str, Any]:
+    skill_store.retire(skill_id, request.reason)
+    skill_store.save_human_review(skill_id, "skill", request.reason)
+    return {"success": True}
+
+
+@app.post("/skills/proposals/{proposal_id}/approve")
+def approve_proposal(proposal_id: str, request: ProposalApprovalRequest) -> dict[str, Any]:
+    if not prompt_refiner.approve_proposal(proposal_id, request.confirmed):
+        raise HTTPException(status_code=404, detail="proposal not found")
+    applied = False
+    if request.confirmed:
+        try:
+            prompt_refiner.apply_approved_proposal(proposal_id)
+            applied = True
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True, "applied": applied}
+
+
+@app.get("/skills/stats")
+def skills_stats() -> dict[str, Any]:
+    return {
+        "total_skills": len(skill_store.get_all_active()),
+        "trusted_skills": len(skill_store.get_trusted_skills()),
+        "total_traces": trace_store.total_traces(),
+        "success_rate_by_platform": trace_store.success_rate_by_platform(),
+        "top_symptoms_resolved": trace_store.top_symptoms_resolved(),
+        "avg_iterations_to_resolve": trace_store.average_iterations_to_resolve(),
+    }
 
 
 def _qdrant_connected() -> bool:

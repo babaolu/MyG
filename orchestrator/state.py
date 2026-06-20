@@ -93,6 +93,13 @@ class BugClassification(BaseModel):
     patterns: list[str] = Field(default_factory=list)
 
 
+class SessionMemory(BaseModel):
+    relevant_skills: list[Any] = Field(default_factory=list)
+    recent_fixes: list[Any] = Field(default_factory=list)
+    platform_hit_rate: dict[str, float] = Field(default_factory=dict)
+    injected_at: str | None = None
+
+
 class VulkanMindState(BaseModel):
     session_id: str
     task_type: Literal[
@@ -120,3 +127,9 @@ class VulkanMindState(BaseModel):
     messages: list[BaseMessage] = Field(default_factory=list)
     agent_trace: list[str] = Field(default_factory=list)
     error: str | None = None
+    self_improvement_phase: str = "start"
+    session_memory: SessionMemory | None = None
+    skill_extracted: bool = False
+    skill_id: str | None = None
+    trace_id: str | None = None
+    improvement_context: str | None = None

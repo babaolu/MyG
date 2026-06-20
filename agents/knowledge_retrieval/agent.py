@@ -4,9 +4,11 @@ import os
 from typing import Any
 
 import httpx
+import structlog
 from pydantic import BaseModel
 
-from orchestrator.state import KnowledgeChunk, PlatformContext
+from agents.self_improvement.memory_injector import MemoryInjector
+from orchestrator.state import KnowledgeChunk, PlatformContext, VulkanMindState
 
 from .retrieval.query_builder import build_query
 
@@ -42,6 +44,11 @@ def knowledge_retrieval_node(state: dict) -> dict:
         return {"error": "platform_context is required before knowledge retrieval", "agent_trace": state.get("agent_trace", [])}
     if isinstance(context, dict):
         context = PlatformContext.model_validate(context)
+    memory_injector = state.get("memory_injector")
+    if memory_injector is not None:
+        injected_state = inject_session_memory(_state_from_mapping(state), memory_injector)
+        state["session_memory"] = injected_state.session_memory
+        state["improvement_context"] = injected_state.improvement_context
     query = build_query(state.get("user_request", ""), context, topic_hint=state.get("topic_hint"))
     client = _configured_qdrant_client()
     if client is None:
@@ -61,6 +68,29 @@ def knowledge_retrieval_node(state: dict) -> dict:
         "retrieved_knowledge": chunks,
         "agent_trace": state.get("agent_trace", []) + ["knowledge_retrieval_node retrieved platform-filtered chunks"],
     }
+
+
+def inject_session_memory(
+    state: VulkanMindState,
+    memory_injector: MemoryInjector,
+) -> VulkanMindState:
+    memory = memory_injector.build_session_memory(
+        platform_context=state.platform_context,
+        task_type=state.task_type,
+    )
+    state = memory_injector.inject_into_state(state, memory)
+    structlog.get_logger("vulkanmind.self_improvement.memory_injection").info(
+        "session_memory_injected",
+        skills=len(memory.relevant_skills),
+        recent_fixes=len(memory.recent_fixes),
+    )
+    return state
+
+
+def _state_from_mapping(state: dict) -> VulkanMindState:
+    if isinstance(state, VulkanMindState):
+        return state
+    return VulkanMindState.model_validate(state)
 
 
 def _configured_qdrant_client() -> Any | None:

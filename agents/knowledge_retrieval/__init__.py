@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .agent import KnowledgeRetrievalResult, knowledge_retrieval_node
+from .agent import KnowledgeRetrievalResult, inject_session_memory, knowledge_retrieval_node
 from .ingestion.chunker import TextChunk, chunk_text
 from .ingestion.pdf_ingester import PdfIngestionResult, PdfMetadata, ingest_pdf
 from .ingestion.web_scraper import SCRAPER_TARGETS, WebMetadata, scrape_known_targets, scrape_url
@@ -20,6 +20,7 @@ __all__ = [
     "connect",
     "ensure_collection",
     "ingest_pdf",
+    "inject_session_memory",
     "knowledge_retrieval_node",
     "scrape_known_targets",
     "scrape_url",

@@ -21,3 +21,32 @@ hardware_governor:
 
 self_update:
   require_human_confirmation: true
+
+self_improvement:
+  enabled: true
+
+  skill_extraction:
+    min_iterations_to_extract: 2
+    min_confidence_to_inject: medium
+    max_skills_in_prompt: 5
+    max_tokens_for_memory: 2000
+
+  curation:
+    audit_schedule_days: 7
+    stale_threshold_days: 90
+    min_hit_rate_to_keep: 0.30
+    auto_promote_threshold: 3
+    require_human_review_below: 0.40
+
+  prompt_refinement:
+    enabled: true
+    min_failures_to_analyse: 5
+    min_confidence_to_propose: 0.70
+    lookback_days: 30
+    require_human_approval: true
+
+  memory_injection:
+    inject_trusted_skills: true
+    inject_recent_fixes: true
+    recent_fixes_limit: 10
+    inject_hit_rates: true

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .agent import DebuggerResult, call_claude_structured, debugger_node
+from .agent import DebuggerResult, call_claude_structured, debugger_node, post_session_record
 from .classifier import classify_bug
 from .fragment_isolator import FragmentSpec, extract_fragment
 from .pattern_library import BUG_PATTERNS, BugHypothesis, BugPattern, match_patterns
@@ -16,4 +16,5 @@ __all__ = [
     "debugger_node",
     "extract_fragment",
     "match_patterns",
+    "post_session_record",
 ]

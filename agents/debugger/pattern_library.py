@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import structlog
 from pydantic import BaseModel
 
-from orchestrator.state import BugHypothesis
+from orchestrator.state import BugHypothesis, PlatformContext
 
 
 class BugPattern(BaseModel):
@@ -53,6 +54,14 @@ BUG_PATTERNS: list[BugPattern] = [
     ),
 ]
 
+PATTERN_METADATA: dict[str, dict[str, str]] = {}
+_PATTERN_STORE: object | None = None
+
+
+def configure_pattern_store(store) -> None:
+    global _PATTERN_STORE
+    _PATTERN_STORE = store
+
 
 def match_patterns(text: str, platform_vendor: str | None = None) -> list[BugPattern]:
     lowered = text.lower()
@@ -73,3 +82,69 @@ def _pattern_keywords(symptom: str) -> list[str]:
         "VALIDATION_LAYOUT": ["layout", "image used", "render pass begin"],
     }
     return mapping.get(symptom, [symptom.lower()])
+
+
+def get_all_symptoms() -> list[str]:
+    return sorted({pattern.symptom for pattern in BUG_PATTERNS})
+
+
+def write_back_fix(
+    symptom: str,
+    hypothesis: BugHypothesis,
+    platform_context: PlatformContext,
+    trace_id: str,
+    skill_id: str,
+) -> None:
+    logger = structlog.get_logger("vulkanmind.self_improvement.pattern_writeback")
+    pattern = next((item for item in BUG_PATTERNS if item.symptom == symptom), None)
+    if pattern is None:
+        pattern = BugPattern(
+            symptom=symptom,
+            classification=_infer_classification(hypothesis),
+            platform_filter=[platform_context.target.gpu_vendor] if platform_context.target.gpu_vendor else None,
+            hypotheses=[hypothesis],
+        )
+        BUG_PATTERNS.append(pattern)
+    elif all(existing.description != hypothesis.description for existing in pattern.hypotheses):
+        pattern.hypotheses.append(hypothesis)
+    else:
+        existing = next(existing for existing in pattern.hypotheses if existing.description == hypothesis.description)
+        existing.probability = min(0.95, existing.probability + 0.05)
+    PATTERN_METADATA[symptom] = {
+        "source": "skill_writeback",
+        "skill_id": skill_id,
+        "trace_id": trace_id,
+        "gpu_vendor": platform_context.target.gpu_vendor,
+        "vulkan_version": platform_context.target.vulkan_version,
+    }
+    hit_rate = 1.0 if hypothesis.probability >= 0.75 else 0.0
+    if _PATTERN_STORE is not None:
+        _PATTERN_STORE.save_pattern_writeback(
+            symptom=symptom,
+            source="skill_writeback",
+            skill_id=skill_id,
+            gpu_vendor=platform_context.target.gpu_vendor,
+            vulkan_version=platform_context.target.vulkan_version,
+            hit_rate=hit_rate,
+        )
+    logger.info(
+        "pattern_writeback_completed",
+        symptom=symptom,
+        skill_id=skill_id,
+        trace_id=trace_id,
+        hypothesis=hypothesis.description,
+    )
+
+
+def mark_pattern_under_review(symptom: str) -> None:
+    metadata = PATTERN_METADATA.setdefault(symptom, {})
+    metadata["under_review"] = "true"
+    if _PATTERN_STORE is not None:
+        _PATTERN_STORE.mark_pattern_under_review(symptom)
+
+
+def _infer_classification(hypothesis: BugHypothesis) -> str:
+    text = f"{hypothesis.description} {hypothesis.fix_template}".lower()
+    if any(token in text for token in ["gpu hang", "driver reset", "thermal", "shader loop"]):
+        return "CROSS_SYSTEM"
+    return "ISOLATABLE"
