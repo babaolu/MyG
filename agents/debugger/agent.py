@@ -1,74 +1,67 @@
 from __future__ import annotations
 
-import json
-import os
 from datetime import UTC, datetime
-from typing import TypeVar
 from uuid import uuid4
 
 import structlog
-from anthropic import Anthropic
-from pydantic import BaseModel, ValidationError
 
-from agents.platform_intelligence.agent import build_agent_system_prompt
 from agents.self_improvement.skill_extractor import SkillExtractor
 from db.execution_traces import ExecutionTrace, ExecutionTraceStore
-from orchestrator.state import BugClassification, BugHypothesis, PlatformContext, VulkanMindState
+from orchestrator.state import (
+    BugClassification,
+    BugHypothesis,
+    VulkanMindState,
+    coerce_state,
+)
 
+# Pattern library is the actual write-back target. Earlier versions passed the
+# skill_extractor instance to itself — bug. The module import below carries
+# through every call to write_back_to_pattern_library.
+from . import pattern_library as _pattern_library_module
 from .classifier import classify_bug
 from .pattern_library import match_patterns
 
 
-class DebuggerResult(BaseModel):
-    bug_classification: BugClassification
-    bug_hypotheses: list[BugHypothesis]
-    active_fix: str | None = None
-    trace: list[str]
+class DebuggerResult:
+    """Lightweight result container kept for backwards API compatibility."""
 
-
-T = TypeVar("T", bound=BaseModel)
-
-
-def call_claude_structured(platform_context: PlatformContext, request: str, response_model: type[T], max_tokens: int = 2048) -> T:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY is required for Claude API calls")
-    client = Anthropic(api_key=api_key)
-    prompt = (
-        "Return only valid JSON matching this Pydantic schema:\n"
-        f"{json.dumps(response_model.model_json_schema(), indent=2)}\n"
-        f"User request: {request}"
-    )
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=max_tokens,
-        system=build_agent_system_prompt(platform_context),
-        messages=[{"role": "user", "content": prompt}],
-    )
-    text = response.content[0].text
-    try:
-        return response_model.model_validate_json(text)
-    except ValidationError as exc:
-        return response_model.model_validate({"error": str(exc), "raw": text})
+    def __init__(
+        self,
+        bug_classification: BugClassification,
+        bug_hypotheses: list[BugHypothesis],
+        active_fix: str | None = None,
+        trace: list[str] | None = None,
+    ) -> None:
+        self.bug_classification = bug_classification
+        self.bug_hypotheses = bug_hypotheses
+        self.active_fix = active_fix
+        self.trace = trace or []
 
 
 def debugger_node(state: dict) -> dict:
-    context = state.get("platform_context")
+    state_model = coerce_state(state)
+    context = state_model.platform_context
     if context is None:
-        return {"error": "platform_context is required before debugging", "agent_trace": state.get("agent_trace", [])}
-    if isinstance(context, dict):
-        context = PlatformContext.model_validate(context)
-    classification = classify_bug(state.get("validation_output"), state.get("build_log"), state.get("user_request"))
-    text = "\n".join(part for part in [state.get("validation_output"), state.get("build_log"), state.get("user_request")] if part)
+        return {
+            "error": "platform_context is required before debugging",
+            "agent_trace": state_model.agent_trace,
+        }
+    classification = classify_bug(
+        state_model.validation_output,
+        state_model.build_log,
+        state_model.user_request,
+    )
+    text = "\n".join(
+        part for part in [state_model.validation_output, state_model.build_log, state_model.user_request] if part
+    )
     patterns = match_patterns(text, context.target.gpu_vendor)
     hypotheses = [hypothesis for pattern in patterns for hypothesis in pattern.hypotheses]
     active_fix = hypotheses[0].fix_template if hypotheses else None
-    trace = state.get("agent_trace", []) + ["debugger_node classified bug and selected hypotheses"]
     return {
         "bug_classification": classification,
         "bug_hypotheses": hypotheses,
         "active_fix": active_fix,
-        "agent_trace": trace,
+        "agent_trace": state_model.agent_trace + ["debugger_node classified bug and selected hypotheses"],
     }
 
 
@@ -85,7 +78,7 @@ def post_session_record(
         skill = skill_extractor.extract(trace, state.platform_context)
         if skill is not None:
             skill_id = skill_extractor.save_skill(skill, trace)
-            skill_extractor.write_back_to_pattern_library(skill, skill_extractor)
+            skill_extractor.write_back_to_pattern_library(skill, _pattern_library_module)
             skill_extracted = True
     structlog.get_logger("vulkanmind.self_improvement.execution_trace").info(
         "execution_trace_recorded",
@@ -100,7 +93,11 @@ def post_session_record(
 def _trace_from_state(state: VulkanMindState) -> ExecutionTrace:
     context = state.platform_context
     winning_hypothesis = max(state.bug_hypotheses, key=lambda item: item.probability, default=None)
-    pattern_matched = state.bug_classification.patterns[0] if state.bug_classification and state.bug_classification.patterns else None
+    pattern_matched = (
+        state.bug_classification.patterns[0]
+        if state.bug_classification and state.bug_classification.patterns
+        else None
+    )
     if pattern_matched is None and winning_hypothesis is not None:
         pattern_matched = _symptom_from_hypothesis(winning_hypothesis)
     validation_text = "\n".join(part for part in [state.validation_output, state.build_log] if part)

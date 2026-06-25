@@ -6,3 +6,7 @@ __pycache__/
 data/*.sqlite3
 data/*.sqlite3-*
 .DS_Store
+
+# Auto-generated knowledge-graph artifact — regenerate with `graphify update`.
+# Never commit; rebuild locally before each `graphify query`.
+graphify-out/

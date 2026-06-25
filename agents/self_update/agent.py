@@ -10,7 +10,7 @@ from agents.self_update.monitors.khronos_monitor import KhronosMonitor, UpdateDi
 from agents.self_update.monitors.research_monitor import poll_research_sources
 from agents.self_update.monitors.vendor_monitor import poll_vendor_blogs
 from db.build_queue_store import BuildQueueStore
-from orchestrator.state import PlatformContext
+from orchestrator.state import coerce_state
 
 
 class SelfUpdateResult(BaseModel):
@@ -19,11 +19,13 @@ class SelfUpdateResult(BaseModel):
 
 
 def self_update_node(state: dict) -> dict:
-    context = state.get("platform_context")
+    state_model = coerce_state(state)
+    context = state_model.platform_context
     if context is None:
-        return {"error": "platform_context is required before self update", "agent_trace": state.get("agent_trace", [])}
-    if isinstance(context, dict):
-        context = PlatformContext.model_validate(context)
+        return {
+            "error": "platform_context is required before self update",
+            "agent_trace": state_model.agent_trace,
+        }
     queue_store = state.get("build_queue_store") or BuildQueueStore()
     store = ChangelogStore(store=queue_store)
     current_version = state.get("current_spec_version", "1.3.296")
@@ -34,10 +36,9 @@ def self_update_node(state: dict) -> dict:
         store.save(khronos_diff)
     diffs.extend(poll_vendor_blogs())
     diffs.extend(poll_research_sources())
-    trace = state.get("agent_trace", []) + ["self_update_node polled monitors without applying unconfirmed changes"]
     return {
         "pending_updates": store.pending_updates(),
-        "agent_trace": trace,
+        "agent_trace": state_model.agent_trace + ["self_update_node polled monitors without applying unconfirmed changes"],
     }
 
 

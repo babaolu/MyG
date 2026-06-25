@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
 from typing import Any
 
 import httpx
 import structlog
-import yaml
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -21,7 +18,9 @@ from db.build_queue_store import BuildQueueStore
 from db.execution_traces import ExecutionTraceStore
 from db.session_store import SessionStore
 from db.skill_writebacks import SkillStore
+from llm.factory import create_llm_client
 from orchestrator.graph import build_graph, configure_self_improvement
+from utils.config import CONFIG_PATH, load_config
 
 logger = structlog.get_logger("vulkanmind")
 
@@ -59,22 +58,9 @@ class MessageResponse(BaseModel):
     knowledge_citations: list[dict[str, Any]] = Field(default_factory=list)
 
 
-CONFIG_PATH = Path(os.environ.get("VULKANMIND_CONFIG", "config.yaml"))
-
-
-def load_config() -> dict[str, Any]:
-    if not CONFIG_PATH.exists():
-        return {}
-    return yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
-
-
-def _anthropic_client():
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return None
-    from anthropic import Anthropic
-
-    return Anthropic(api_key=api_key)
+# ``load_config`` now lives in ``utils.config``; re-export it under the legacy
+# ``main.load_config`` symbol so any external importer keeps working.
+__all__ = ["CONFIG_PATH", "load_config"]
 
 
 config = load_config()
@@ -84,9 +70,11 @@ bug_history_store = BugHistoryStore(storage_path)
 build_queue_store = BuildQueueStore(storage_path)
 trace_store = ExecutionTraceStore(storage_path)
 skill_store = SkillStore(storage_path)
+
+llm_client = create_llm_client(config.get("llm"))
 memory_injector = MemoryInjector(skill_store, trace_store)
-skill_extractor = SkillExtractor(_anthropic_client(), skill_store)
-prompt_refiner = PromptRefiner(_anthropic_client(), trace_store, skill_store)
+skill_extractor = SkillExtractor(llm_client, skill_store)
+prompt_refiner = PromptRefiner(llm_client, trace_store, skill_store)
 pattern_curator = PatternCurator(skill_store, trace_store, pattern_library)
 configure_self_improvement(
     storage_path,
@@ -97,6 +85,12 @@ configure_self_improvement(
 )
 graph = build_graph(storage_path)
 app = FastAPI(title="VulkanMind", version="0.1.0")
+
+
+def _graphify_reader():
+    from tools.graphify_reader import build_graphify_reader
+
+    return build_graphify_reader(config.get("graphify"))
 
 
 @app.get("/health")
@@ -130,11 +124,14 @@ def send_message(session_id: str, request: SessionMessageRequest) -> MessageResp
         "session_id": session_id,
         "task_type": "unknown",
         "user_request": request.message,
-        "attached_files": request.attached_files if hasattr(request, "attached_files") else [],
+        "attached_files": getattr(request, "attached_files", []),
         "validation_output": request.validation_output,
         "build_log": request.build_log,
         "target_platform_declared": target_declared,
         "agent_trace": [],
+        "memory_injector": memory_injector,
+        "llm_client": llm_client,
+        "graphify_reader": _graphify_reader(),
     }
     result = graph.invoke(initial_state, config={"configurable": {"thread_id": session_id}})
     result = dict(result) if not isinstance(result, dict) else result
@@ -166,6 +163,9 @@ def platform_context(session_id: str) -> dict[str, Any]:
             "task_type": "platform_detect",
             "user_request": "return current platform context",
             "agent_trace": [],
+            "llm_client": llm_client,
+            "memory_injector": memory_injector,
+            "graphify_reader": _graphify_reader(),
         },
         config={"configurable": {"thread_id": session_id}},
     )

@@ -151,6 +151,50 @@ Useful endpoints:
 - `GET /skills/review` shows skills under review, pending prompt proposals, and human review items.
 - `GET /skills/stats` shows total skills, trusted skills, total traces, success rate by platform, top resolved symptoms, and average iterations to resolve.
 
+## Graphify Knowledge Graph
+
+VulkanMind's `knowledge_retrieval_node` runs two retrieval paths in parallel:
+
+1. **Qdrant** — vector search filtered by GPU vendor / OS / Vulkan version.
+2. **Graphify** — a local knowledge graph built from the VulkanMind codebase
+   (and any ingested docs), enabling structural queries that vector search
+   cannot answer.
+
+Graphify is read-only from the agent's perspective. The CLI owns all writes:
+
+```bash
+# Re-build the graph from scratch (AST-only, no LLM).
+graphify update . --force
+
+# Re-extract with semantic edges (LLM-backed).
+graphify extract . --mode deep
+
+# Run a BFS question over the graph.
+graphify query "what does the LangGraph dispatcher do"
+```
+
+The Python adapter lives in `tools/graphify_reader.py`:
+
+```python
+from tools.graphify_reader import build_graphify_reader
+
+reader = build_graphify_reader({"graph_path": "graphify-out/graph.json"})
+if reader is not None:
+    excerpt = reader.format_for_prompt(
+        "How does self_improvement_node feed memory into the prompt?"
+    )
+```
+
+The reader shells out to the `graphify` CLI for `query` and `path` operations
+and reads `graph.json` directly for relationship/edge lookups. If the CLI is
+absent or the graph file does not exist, `build_graphify_reader` returns
+`None` and the knowledge retrieval node falls through to the Qdrant path
+without raising.
+
+The live graph for this repository is committed under `graphify-out/` (457
+nodes, 27 communities across the `agents/`, `db/`, `orchestrator/`, `tools/`
+packages plus the design docs in `vulkan_mind.md`).
+
 ## Configuration
 
 Edit `config.yaml` before running:

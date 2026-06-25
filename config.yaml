@@ -4,13 +4,18 @@ llm:
   api_key_env: ANTHROPIC_API_KEY
 
 embeddings:
-  provider: anthropic
+  provider: voyage
   model: voyage-3
+  api_key_env: VOYAGE_API_KEY
 
 qdrant:
   host: localhost
   port: 6333
   collection: vulkanmind_chunks
+
+graphify:
+  graph_path: graphify-out/graph.json
+  budget_tokens: 2000
 
 storage:
   database_path: data/vulkanmind.sqlite3

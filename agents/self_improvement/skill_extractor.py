@@ -5,10 +5,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from anthropic import Anthropic
 from pydantic import BaseModel
 
-from agents.debugger.pattern_library import write_back_fix
 from db.execution_traces import ExecutionTrace
 from db.skill_writebacks import SkillStore, VulkanSkill
 from orchestrator.state import (
@@ -34,8 +32,8 @@ class ExtractedSkill(BaseModel):
 
 
 class SkillExtractor:
-    def __init__(self, anthropic_client: Anthropic, skill_store: SkillStore):
-        self.anthropic_client = anthropic_client
+    def __init__(self, llm_client, skill_store: SkillStore):
+        self.llm_client = llm_client
         self.skill_store = skill_store
 
     def should_extract(self, trace: ExecutionTrace) -> bool:
@@ -50,24 +48,30 @@ class SkillExtractor:
         trace: ExecutionTrace,
         platform_context: PlatformContext,
     ) -> VulkanSkill | None:
-        if self.anthropic_client is None:
+        if self.llm_client is None:
             return None
+        from llm.client import LLMMessage
+
         prompt = self._build_extraction_prompt(trace, platform_context)
         try:
-            response = self.anthropic_client.messages.create(
-                model="claude-sonnet-4-6",
+            response = self.llm_client.complete_structured(
+                [
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            "You are extracting a reusable Vulkan graphics skill from a successful debug trace. "
+                            "The skill must be expressed as a platform-aware, step-by-step procedure that another "
+                            "agent could follow to resolve the same class of problem without re-deriving the solution. "
+                            "The fix_procedure must be precise and reference specific Vulkan-Hpp APIs and VMA interfaces "
+                            "where applicable. The validation_step must be a concrete, executable check."
+                        ),
+                    ),
+                    LLMMessage(role="user", content=prompt),
+                ],
+                ExtractedSkill,
                 max_tokens=2048,
-                system=(
-                    "You are extracting a reusable Vulkan graphics skill from a successful debug trace. "
-                    "The skill must be expressed as a platform-aware, step-by-step procedure that another "
-                    "agent could follow to resolve the same class of problem without re-deriving the solution. "
-                    "The fix_procedure must be precise and reference specific Vulkan-Hpp APIs and VMA interfaces "
-                    "where applicable. The validation_step must be a concrete, executable check."
-                ),
-                messages=[{"role": "user", "content": prompt}],
             )
-            text = response.content[0].text
-            extracted = ExtractedSkill.model_validate_json(text)
+            extracted = response
         except Exception:
             return None
         return self._to_skill(extracted, trace, platform_context)
@@ -85,6 +89,18 @@ class SkillExtractor:
         skill: VulkanSkill,
         pattern_library: Any,
     ) -> None:
+        """Write the extracted skill back into the pattern library.
+
+        ``pattern_library`` is the actual `agents.debugger.pattern_library`
+        module; some legacy callers may still pass the ``SkillExtractor``
+        instance — we treat that as a no-op instead of corrupting state by
+        writing into ourselves.
+        """
+        write_back = getattr(pattern_library, "write_back_fix", None)
+        if write_back is None:
+            # Self or unknown object — silently no-op. This used to silently
+            # double-write into the pattern library, masking the real bug.
+            return
         hypothesis = BugHypothesis(
             description=skill.fix_procedure,
             probability=0.9 if skill.confidence == "trusted" else 0.75,
@@ -93,21 +109,13 @@ class SkillExtractor:
             affected_platforms=[skill.gpu_vendor] if skill.gpu_vendor else None,
         )
         platform_context = _platform_from_skill(skill)
-        write_back_fix(
+        write_back(
             symptom=skill.symptom,
             hypothesis=hypothesis,
             platform_context=platform_context,
             trace_id="",
             skill_id=skill.skill_id,
         )
-        if hasattr(pattern_library, "write_back_fix"):
-            pattern_library.write_back_fix(
-                symptom=skill.symptom,
-                hypothesis=hypothesis,
-                platform_context=platform_context,
-                trace_id="",
-                skill_id=skill.skill_id,
-            )
 
     def _build_extraction_prompt(self, trace: ExecutionTrace, platform_context: PlatformContext) -> str:
         return json.dumps(

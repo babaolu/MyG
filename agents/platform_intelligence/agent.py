@@ -5,6 +5,8 @@ from typing import Any
 import psutil
 from pydantic import BaseModel, Field
 
+from orchestrator.state import coerce_state
+
 from .context_schema import (
     HostContext,
     PlatformContext,
@@ -147,13 +149,19 @@ def build_agent_system_prompt(platform_context: PlatformContext) -> str:
 
 
 def platform_intelligence_node(state: dict[str, Any]) -> dict[str, Any]:
+    state_model = coerce_state(state)
     try:
-        user_declared = state.get("target_platform_declared") or state.get("target_platform")
-        adb_connected = bool(state.get("adb_connected", False))
+        user_declared = state_model.target_platform_declared or state_model.target_platform
+        adb_connected = bool(state_model.adb_connected)
         context = build_platform_context(user_declared=user_declared, adb_connected=adb_connected)
-        trace = state.get("agent_trace", []) + [
-            f"platform_intelligence_node detected host={context.host.os}/{context.host.arch} target={context.target.source}"
-        ]
-        return {"platform_context": context, "agent_trace": trace}
+        return {
+            "platform_context": context,
+            "agent_trace": state_model.agent_trace + [
+                f"platform_intelligence_node detected host={context.host.os}/{context.host.arch} target={context.target.source}"
+            ],
+        }
     except Exception as exc:
-        return {"error": str(exc), "agent_trace": state.get("agent_trace", []) + ["platform_intelligence_node failed"]}
+        return {
+            "error": str(exc),
+            "agent_trace": state_model.agent_trace + ["platform_intelligence_node failed"],
+        }

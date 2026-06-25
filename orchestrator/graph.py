@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
@@ -19,7 +18,8 @@ from agents.self_update import self_update_node
 from db.execution_traces import ExecutionTraceStore
 from db.skill_writebacks import SkillStore
 from orchestrator.router import error_node, router_node
-from orchestrator.state import VulkanMindState
+from orchestrator.state import VulkanMindState, coerce_state
+from utils.config import load_config
 
 _TRACE_STORE: ExecutionTraceStore | None = None
 _SKILL_STORE: SkillStore | None = None
@@ -35,12 +35,23 @@ def configure_self_improvement(
     memory_injector: MemoryInjector | None = None,
     skill_extractor: SkillExtractor | None = None,
 ) -> None:
+    """Bootstrap the self-improvement subsystem.
+
+    When ``skill_extractor`` is omitted we lazily build one from the loaded
+    config — this preserves the historical "configure-then-use" pattern while
+    keeping the LLMClient construction out of the call site.
+    """
     global _TRACE_STORE, _SKILL_STORE, _MEMORY_INJECTOR, _SKILL_EXTRACTOR
     _TRACE_STORE = trace_store or ExecutionTraceStore(str(database_path))
     _SKILL_STORE = skill_store or SkillStore(str(database_path))
     configure_pattern_store(_SKILL_STORE)
     _MEMORY_INJECTOR = memory_injector or MemoryInjector(_SKILL_STORE, _TRACE_STORE)
-    _SKILL_EXTRACTOR = skill_extractor or SkillExtractor(_anthropic_client(), _SKILL_STORE)
+    if skill_extractor is not None:
+        _SKILL_EXTRACTOR = skill_extractor
+    else:
+        from llm.factory import create_llm_client
+
+        _SKILL_EXTRACTOR = SkillExtractor(create_llm_client(load_config().get("llm")), _SKILL_STORE)
 
 
 def get_self_improvement_components() -> tuple[ExecutionTraceStore, SkillStore, MemoryInjector, SkillExtractor]:
@@ -50,7 +61,7 @@ def get_self_improvement_components() -> tuple[ExecutionTraceStore, SkillStore, 
 
 
 def self_improvement_node(state: VulkanMindState | dict) -> dict:
-    state_model = _state_from_mapping(state)
+    state_model = coerce_state(state)
     if state_model.self_improvement_phase == "start":
         if state_model.platform_context is None:
             return {"error": "platform_context is required before memory injection"}
@@ -81,12 +92,13 @@ def _record_trace_async(state: VulkanMindState) -> None:
 
 
 def _route_after_platform(state: VulkanMindState | dict) -> str:
-    platform_context = state.get("platform_context") if isinstance(state, dict) else state.platform_context
-    return "self_improvement_node" if platform_context is not None else "error_node"
+    state_model = coerce_state(state)
+    return "self_improvement_node" if state_model.platform_context is not None else "error_node"
 
 
 def _route_after_router(state: VulkanMindState | dict) -> str:
-    task_type = state.get("task_type") if isinstance(state, dict) else state.task_type
+    state_model = coerce_state(state)
+    task_type = state_model.task_type
     if task_type in {"code_generation", "debug", "knowledge_query"}:
         return "knowledge_retrieval_node"
     if task_type == "self_update":
@@ -95,7 +107,8 @@ def _route_after_router(state: VulkanMindState | dict) -> str:
 
 
 def _route_after_knowledge(state: VulkanMindState | dict) -> str:
-    task_type = state.get("task_type") if isinstance(state, dict) else state.task_type
+    state_model = coerce_state(state)
+    task_type = state_model.task_type
     if task_type == "code_generation":
         return "code_generation_node"
     if task_type == "debug":
@@ -104,13 +117,13 @@ def _route_after_knowledge(state: VulkanMindState | dict) -> str:
 
 
 def _route_after_code_generation(state: VulkanMindState | dict) -> str:
-    validation_passed = state.get("validation_passed") if isinstance(state, dict) else state.validation_passed
-    return "self_improvement_node" if validation_passed else "debugger_node"
+    state_model = coerce_state(state)
+    return "self_improvement_node" if state_model.validation_passed else "debugger_node"
 
 
 def _route_after_self_improvement(state: VulkanMindState | dict) -> str:
-    phase = state.get("self_improvement_phase") if isinstance(state, dict) else state.self_improvement_phase
-    return "router_node" if phase == "start" else END
+    state_model = coerce_state(state)
+    return "router_node" if state_model.self_improvement_phase == "start" else END
 
 
 def build_graph(database_path: str | Path = "data/vulkanmind.sqlite3") -> StateGraph:
@@ -139,18 +152,3 @@ def build_graph(database_path: str | Path = "data/vulkanmind.sqlite3") -> StateG
 
 def create_app_graph(database_path: str | Path = "data/vulkanmind.sqlite3") -> StateGraph:
     return build_graph(database_path)
-
-
-def _state_from_mapping(state: VulkanMindState | dict) -> VulkanMindState:
-    if isinstance(state, VulkanMindState):
-        return state
-    return VulkanMindState.model_validate(state)
-
-
-def _anthropic_client():
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return None
-    from anthropic import Anthropic
-
-    return Anthropic(api_key=api_key)

@@ -6,7 +6,6 @@ from typing import Any
 from uuid import uuid4
 
 import structlog
-from anthropic import Anthropic
 from pydantic import BaseModel
 
 from db.execution_traces import ExecutionTraceStore
@@ -32,11 +31,11 @@ class _ProposalResponse(BaseModel):
 class PromptRefiner:
     def __init__(
         self,
-        anthropic_client: Anthropic,
+        llm_client,
         trace_store: ExecutionTraceStore,
         skill_store: SkillStore | None = None,
     ):
-        self.anthropic_client = anthropic_client
+        self.llm_client = llm_client
         self.trace_store = trace_store
         self.skill_store = skill_store
 
@@ -44,7 +43,7 @@ class PromptRefiner:
         self,
         lookback_days: int = 30,
     ) -> list[PromptRefinementProposal]:
-        if self.anthropic_client is None:
+        if self.llm_client is None:
             return []
         since = datetime.now(UTC) - timedelta(days=lookback_days)
         failures = self.trace_store.get_failures_since(since)
@@ -55,7 +54,7 @@ class PromptRefiner:
         for agent_target, traces in grouped.items():
             if len(traces) < 5:
                 continue
-            response = self._ask_claude(agent_target, traces)
+            response = self._ask_llm(agent_target, traces)
             if response.confidence >= 0.7:
                 proposals.extend(response.proposals)
         return proposals
@@ -105,7 +104,9 @@ class PromptRefiner:
             return None
         return self.skill_store.get_prompt_override(agent_target)
 
-    def _ask_claude(self, agent_target: str, traces) -> _ProposalResponse:
+    def _ask_llm(self, agent_target: str, traces) -> _ProposalResponse:
+        from llm.client import LLMMessage
+
         prompt = json.dumps(
             {
                 "agent_target": agent_target,
@@ -115,17 +116,20 @@ class PromptRefiner:
             indent=2,
         )
         try:
-            response = self.anthropic_client.messages.create(
-                model="claude-sonnet-4-6",
+            parsed = self.llm_client.complete_structured(
+                [
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            "You are refining VulkanMind system prompts from execution failures. "
+                            "Return only structured JSON. Propose precise prompt changes only when confidence is high."
+                        ),
+                    ),
+                    LLMMessage(role="user", content=prompt),
+                ],
+                _ProposalResponse,
                 max_tokens=4096,
-                system=(
-                    "You are refining VulkanMind system prompts from execution failures. "
-                    "Return only structured JSON. Propose precise prompt changes only when confidence is high."
-                ),
-                messages=[{"role": "user", "content": prompt}],
             )
-            text = response.content[0].text
-            parsed = _ProposalResponse.model_validate_json(text)
             for proposal in parsed.proposals:
                 proposal.proposal_id = f"prompt-{uuid4()}"
                 proposal.created_at = datetime.now(UTC).isoformat()

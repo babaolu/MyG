@@ -127,9 +127,45 @@ class VulkanMindState(BaseModel):
     messages: list[BaseMessage] = Field(default_factory=list)
     agent_trace: list[str] = Field(default_factory=list)
     error: str | None = None
-    self_improvement_phase: str = "start"
+    self_improvement_phase: Literal["start", "end"] = "start"
     session_memory: SessionMemory | None = None
     skill_extracted: bool = False
     skill_id: str | None = None
     trace_id: str | None = None
     improvement_context: str | None = None
+    topic_hint: str | None = None
+    graphify_snapshot: str | None = None
+    target_platform_declared: dict[str, Any] | None = None
+    target_platform: dict[str, Any] | None = None
+    adb_connected: bool = False
+    # Optional collaborators injected by the runtime (memory injector, Graphify
+    # reader, etc.). Pydantic v2 chokes on arbitrary objects without arbitrary_types_allowed.
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="ignore")
+    memory_injector: Any | None = None
+    graphify_reader: Any | None = None
+    llm_client: Any | None = None
+
+
+def coerce_state(
+    state: VulkanMindState | dict[str, Any],
+) -> VulkanMindState:
+    """Return a typed ``VulkanMindState`` for whatever the caller passed in.
+
+    Graph nodes historically accepted ``state: dict`` because LangGraph emits
+    raw mappings from state reducers. Wrapping that conversion in one helper
+    means every node can start with the same two-line pattern, and tests can
+    use ``VulkanMindState`` directly without losing the run-time path.
+
+    ``session_id`` and ``task_type`` are required by the model schema. When
+    they are missing (e.g. minimal dict-based unit-test fixtures) we default
+    them so node logic can still run; callers that need real persistence
+    always populate them explicitly.
+    """
+    if isinstance(state, VulkanMindState):
+        return state
+    if isinstance(state, dict):
+        if "session_id" not in state:
+            state = {**state, "session_id": state.get("session_id") or "test-session"}
+        if "task_type" not in state:
+            state = {**state, "task_type": state.get("task_type") or "unknown"}
+    return VulkanMindState.model_validate(state)
