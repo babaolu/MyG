@@ -284,6 +284,60 @@ uv run uvicorn main:app --reload
 
 The API listens on `http://127.0.0.1:8000` by default.
 
+## Using the Shell
+
+VulkanMind has an interactive shell — no curl required.
+
+Start the backend:
+
+```bash
+uv run uvicorn main:app --reload
+```
+
+In a second terminal, start the shell:
+
+```bash
+uv run python shell.py
+```
+
+Or via the `Makefile` from the repo root:
+
+```bash
+make shell    # terminal 2 — interactive shell
+make backend  # terminal 1 — FastAPI service (do this first)
+make dev      # starts both in one process (backend in background)
+```
+
+Shell commands:
+
+```text
+/help          Show all commands
+/platform      Show detected platform context
+/skills        Show accumulated skill statistics
+/trusted       List trusted skills
+/queue         Show speculative build queue
+/review        Show items needing human review
+/new           Start a new session
+/project PATH  Switch to a different project's Graphify graph
+/validation X  Attach validation layer output to next message
+/buildlog X    Attach build log to next message
+/clear         Clear the screen
+/exit          Exit
+```
+
+Everything else is sent as a natural language message to VulkanMind.
+
+Point at a remote backend:
+
+```bash
+uv run python shell.py --host http://192.168.1.100:8000
+```
+
+The shell is a thin HTTP client. All routing, retrieval, generation, and
+state lives in the backend — restart `uvicorn` to pick up backend changes,
+the shell will resume the active session automatically via the local
+`.vulkanmind_session` file.
+
 ## API reference
 
 ### Start a session
