@@ -12,6 +12,7 @@ from orchestrator.state import (
     BugHypothesis,
     VulkanMindState,
     coerce_state,
+    normalize_node_return,
 )
 
 # Pattern library is the actual write-back target. Earlier versions passed the
@@ -57,12 +58,12 @@ def debugger_node(state: dict) -> dict:
     patterns = match_patterns(text, context.target.gpu_vendor)
     hypotheses = [hypothesis for pattern in patterns for hypothesis in pattern.hypotheses]
     active_fix = hypotheses[0].fix_template if hypotheses else None
-    return {
+    return normalize_node_return({
         "bug_classification": classification,
         "bug_hypotheses": hypotheses,
         "active_fix": active_fix,
         "agent_trace": state_model.agent_trace + ["debugger_node classified bug and selected hypotheses"],
-    }
+    })
 
 
 def post_session_record(

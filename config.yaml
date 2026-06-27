@@ -1,7 +1,7 @@
 llm:
-  provider: anthropic
-  model: claude-sonnet-4-6
-  api_key_env: ANTHROPIC_API_KEY
+  provider: nvidia_nim
+  model: nvidia_nim/minimaxai/minimax-m3
+  api_key_env: NVIDIA_API_KEY
 
 embeddings:
   provider: voyage

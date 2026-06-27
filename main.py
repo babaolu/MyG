@@ -76,21 +76,25 @@ memory_injector = MemoryInjector(skill_store, trace_store)
 skill_extractor = SkillExtractor(llm_client, skill_store)
 prompt_refiner = PromptRefiner(llm_client, trace_store, skill_store)
 pattern_curator = PatternCurator(skill_store, trace_store, pattern_library)
-configure_self_improvement(
-    storage_path,
-    trace_store=trace_store,
-    skill_store=skill_store,
-    memory_injector=memory_injector,
-    skill_extractor=skill_extractor,
-)
-graph = build_graph(storage_path)
-app = FastAPI(title="VulkanMind", version="0.1.0")
 
 
 def _graphify_reader():
     from tools.graphify_reader import build_graphify_reader
 
     return build_graphify_reader(config.get("graphify"))
+
+
+configure_self_improvement(
+    storage_path,
+    trace_store=trace_store,
+    skill_store=skill_store,
+    memory_injector=memory_injector,
+    skill_extractor=skill_extractor,
+    llm_client=llm_client,
+    graphify_reader=_graphify_reader(),
+)
+graph = build_graph(storage_path)
+app = FastAPI(title="VulkanMind", version="0.1.0")
 
 
 @app.get("/health")
@@ -129,9 +133,11 @@ def send_message(session_id: str, request: SessionMessageRequest) -> MessageResp
         "build_log": request.build_log,
         "target_platform_declared": target_declared,
         "agent_trace": [],
-        "memory_injector": memory_injector,
-        "llm_client": llm_client,
-        "graphify_reader": _graphify_reader(),
+        # NOTE: ``memory_injector`` / ``llm_client`` / ``graphify_reader`` are
+        # NOT carried in state — they are runtime collaborators kept in
+        # module-scoped singletons (``graph._MEMORY_INJECTOR`` etc.). Pushing
+        # them into state would put unserialisable objects into the
+        # langgraph checkpoint persistence path.
     }
     result = graph.invoke(initial_state, config={"configurable": {"thread_id": session_id}})
     result = dict(result) if not isinstance(result, dict) else result
@@ -163,9 +169,6 @@ def platform_context(session_id: str) -> dict[str, Any]:
             "task_type": "platform_detect",
             "user_request": "return current platform context",
             "agent_trace": [],
-            "llm_client": llm_client,
-            "memory_injector": memory_injector,
-            "graphify_reader": _graphify_reader(),
         },
         config={"configurable": {"thread_id": session_id}},
     )

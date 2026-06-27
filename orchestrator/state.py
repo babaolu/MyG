@@ -146,6 +146,36 @@ class VulkanMindState(BaseModel):
     llm_client: Any | None = None
 
 
+def _dump_models(value: Any) -> Any:
+    """Convert BaseModel instances to dicts (and recurse into containers).
+
+    LangGraph 1.x re-runs the state schema through ``schema(**input)`` between
+    nodes, and Pydantic v2 sometimes rejects a pre-validated model instance as
+    the input for a same-typed field under strict mode. Returning plain
+    dicts/lists from each node keeps that revalidation cheap and avoids the
+    error.
+    """
+    if isinstance(value, BaseModel):
+        return value.model_dump()
+    if isinstance(value, dict):
+        return {key: _dump_models(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_dump_models(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_dump_models(item) for item in value)
+    return value
+
+
+def normalize_node_return(payload: dict[str, Any]) -> dict[str, Any]:
+    """Run ``_dump_models`` across every value in a node's return dict.
+
+    Use as the last step before returning from a graph node:
+
+        return normalize_node_return({...})
+    """
+    return {key: _dump_models(value) for key, value in payload.items()}
+
+
 def coerce_state(
     state: VulkanMindState | dict[str, Any],
 ) -> VulkanMindState:

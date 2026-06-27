@@ -154,8 +154,13 @@ def platform_intelligence_node(state: dict[str, Any]) -> dict[str, Any]:
         user_declared = state_model.target_platform_declared or state_model.target_platform
         adb_connected = bool(state_model.adb_connected)
         context = build_platform_context(user_declared=user_declared, adb_connected=adb_connected)
+        # Dump to dict before returning: langgraph 1.x re-runs the state schema
+        # through ``schema(**input)`` between nodes, and Pydantic v2 rejects a
+        # pre-validated model instance as the input for a same-typed field. A
+        # plain dict round-trip avoids that strict-mode rejection without
+        # disturbing downstream nodes (they re-validate via ``coerce_state``).
         return {
-            "platform_context": context,
+            "platform_context": context.model_dump(),
             "agent_trace": state_model.agent_trace + [
                 f"platform_intelligence_node detected host={context.host.os}/{context.host.arch} target={context.target.source}"
             ],

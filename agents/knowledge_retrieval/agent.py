@@ -7,7 +7,13 @@ import structlog
 
 from agents.self_improvement.memory_injector import MemoryInjector
 from llm.embedding_client import EmbeddingClient
-from orchestrator.state import KnowledgeChunk, PlatformContext, VulkanMindState, coerce_state
+from orchestrator.state import (
+    KnowledgeChunk,
+    PlatformContext,
+    VulkanMindState,
+    coerce_state,
+    normalize_node_return,
+)
 
 from .retrieval.query_builder import build_query
 
@@ -43,13 +49,14 @@ def knowledge_retrieval_node(state: dict) -> dict:
             "error": "platform_context is required before knowledge retrieval",
             "agent_trace": state_model.agent_trace,
         }
-    if state_model.memory_injector is not None:
-        injected = inject_session_memory(state_model, state_model.memory_injector)
+    runtime = _runtime()
+    if runtime["memory_injector"] is not None:
+        injected = inject_session_memory(state_model, runtime["memory_injector"])
         state_model = injected
     query = build_query(state_model.user_request, context, topic_hint=state_model.topic_hint)
     qdrant_chunks = _qdrant_retrieve(query)
-    graphify_excerpt = _graphify_retrieve(state_model.user_request, state_model.graphify_reader)
-    return {
+    graphify_excerpt = _graphify_retrieve(state_model.user_request, runtime["graphify_reader"])
+    return normalize_node_return({
         "session_memory": state_model.session_memory,
         "improvement_context": state_model.improvement_context,
         "retrieved_knowledge": qdrant_chunks,
@@ -59,7 +66,7 @@ def knowledge_retrieval_node(state: dict) -> dict:
             f"knowledge_retrieval_node retrieved {len(qdrant_chunks)} platform-filtered chunks"
             + (" + graphify snippet" if graphify_excerpt else "")
         ],
-    }
+    })
 
 
 def qdrant_retrieve(
@@ -127,6 +134,18 @@ def inject_session_memory(
         recent_fixes=len(memory.recent_fixes),
     )
     return state
+
+
+def _runtime() -> dict[str, Any]:
+    """Read the runtime collaborators from the graph module.
+
+    These collaborators (memory_injector, llm_client, graphify_reader) are
+    unserialisable, so they cannot live in langgraph state — main.py wires
+    them once via ``configure_self_improvement`` and nodes access them here.
+    """
+    from orchestrator import graph as _graph
+
+    return _graph.get_runtime()
 
 
 def _configured_qdrant_client() -> Any | None:

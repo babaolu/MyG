@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from agents.self_update.monitors.khronos_monitor import UpdateDiff
+if TYPE_CHECKING:  # avoid the runtime circular import: db.build_queue_store ↔ agents.self_update
+    from agents.self_update.monitors.khronos_monitor import UpdateDiff
+
 from orchestrator.state import BuildCandidate
 
 
@@ -107,7 +110,11 @@ class BuildQueueStore:
         return diff
 
     def _row_to_diff(self, row: sqlite3.Row) -> UpdateDiff:
-        return UpdateDiff(
+        from agents.self_update.monitors.khronos_monitor import (
+            UpdateDiff as _UpdateDiff,  # noqa: F811,F401
+        )
+
+        return _UpdateDiff(
             update_id=row["update_id"],
             source=row["source"],
             current_version=row["current_version"],

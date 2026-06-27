@@ -37,6 +37,17 @@ def classify_task_type(user_request: str) -> TaskType:
     return "unknown"
 
 
+def _runtime_llm_client():
+    """Read the LLMClient from the graph's runtime slot.
+
+    Tests monkeypatch ``orchestrator.graph._LLM_CLIENT`` directly; production
+    paths populate it via ``configure_self_improvement``.
+    """
+    from orchestrator import graph as _graph
+
+    return getattr(_graph, "_LLM_CLIENT", None)
+
+
 def classify_task(
     user_request: str,
     platform_summary: str | None,
@@ -100,7 +111,7 @@ def router_node(state: dict) -> dict:
             platform_summary = platform_context_summary(state_model.platform_context)
         except Exception:
             platform_summary = None
-    decision = classify_task(user_request, platform_summary, state_model.llm_client)
+    decision = classify_task(user_request, platform_summary, _runtime_llm_client())
     return {
         "task_type": decision.task_type,
         "agent_trace": state_model.agent_trace
