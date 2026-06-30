@@ -20,18 +20,50 @@ class _RouterDecision(BaseModel):
 
 
 _KEYWORD_DEFAULTS: dict[TaskType, list[str]] = {
-    "code_generation": ["generate", "create", "code", "cmake", "vulkan-hpp", "vulkan hpp"],
-    "debug": ["debug", "bug", "error", "validation", "black screen", "gpu hang", "hang"],
-    "knowledge_query": ["retrieve", "knowledge", "docs", "spec", "reference", "citation"],
-    "self_update": ["self update", "update monitor", "spec update", "changelog"],
-    "platform_detect": ["platform", "detect", "target"],
+    "code_generation": [
+        # Strong authoring verbs — these unambiguously indicate code-gen intent
+        # ("render a triangle", "draw a quad", "create a swapchain", ...).
+        "generate", "create", "build", "render", "draw", "write", "implement",
+        "scaffold", "snippet", "boilerplate",
+        # Tool / language markers — code-related by default.
+        "cmake", "code", "vulkan-hpp", "vulkan hpp", "vhpp", "vma",
+    ],
+    "debug": [
+        "debug", "bug", "error", "validation", "black screen",
+        "gpu hang", "hang", "crash", "regression", "broken",
+        "validation layer", "spirv-val",
+    ],
+    "knowledge_query": [
+        # Question phrases drive the textbook-question route. Vulkan nouns are
+        # intentionally NOT listed here — they'd over-match "render a triangle"
+        # and "create a swapchain" cases. Verbs in code_generation dominate
+        # authorial intents; question phrases dominate retrospective intents.
+        "retrieve", "knowledge", "docs", "doc", "spec", "specification",
+        "reference", "citation", "manual", "explain",
+        "what is", "what are", "how does", "why does",
+    ],
+    "self_update": [
+        "self update", "update monitor", "spec update", "changelog",
+        "khronos update",
+    ],
+    "platform_detect": [
+        "platform", "detect", "target", "device", "adb",
+        "what device", "which device", "what platform",
+    ],
 }
 
 
 def classify_task_type(user_request: str) -> TaskType:
-    """Cheap keyword-based classifier used as fallback when LLM routing fails."""
+    """Cheap keyword-based classifier used as fallback when LLM routing fails.
+
+    Iteration order matters: knowledge_query is checked before code_generation
+    so that textbook questions about Vulkan objects ("what is a swapchain?")
+    route to retrieval rather than to code generation. Strong authoring verbs
+    in code_generation still win for authorial prompts ("create a swapchain").
+    """
     lowered = user_request.lower()
-    for task_type, tokens in _KEYWORD_DEFAULTS.items():
+    for task_type in ("knowledge_query", "code_generation", "platform_detect", "debug", "self_update"):
+        tokens = _KEYWORD_DEFAULTS[task_type]
         if any(token in lowered for token in tokens):
             return task_type
     return "unknown"
@@ -89,12 +121,21 @@ def classify_task(
         return _RouterDecision(task_type=classify_task_type(user_request), rationale="LLM failure; keyword fallback")
 
 
-def error_node(state: dict) -> dict:
-    message = state.get("error") or "Unknown task type; please clarify the request."
-    return {
+def error_node(state: Any) -> dict:
+    """Terminal node — surfaces an error message back through the state channel.
+
+    langgraph 1.x passes a typed ``VulkanMindState`` Pydantic instance to nodes
+    (re-validated between edges), so we coerce and read fields as attributes
+    rather than calling ``.get`` on a dict.
+    """
+    from orchestrator.state import coerce_state, normalize_node_return
+
+    state_model = coerce_state(state)
+    message = getattr(state_model, "error", None) or "Unknown task type; please clarify the request."
+    return normalize_node_return({
         "error": message,
-        "agent_trace": (state.get("agent_trace") or []) + ["error_node recorded clarification request"],
-    }
+        "agent_trace": (state_model.agent_trace or []) + ["error_node recorded clarification request"],
+    })
 
 
 def router_node(state: dict) -> dict:

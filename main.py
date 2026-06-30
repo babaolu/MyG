@@ -1,26 +1,44 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
 import structlog
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-import agents.debugger.pattern_library as pattern_library
-from agents.self_improvement.memory_injector import MemoryInjector
-from agents.self_improvement.pattern_curator import PatternCurator
-from agents.self_improvement.prompt_refiner import PromptRefiner
-from agents.self_improvement.skill_extractor import SkillExtractor
-from db.bug_history import BugHistoryStore
-from db.build_queue_store import BuildQueueStore
-from db.execution_traces import ExecutionTraceStore
-from db.session_store import SessionStore
-from db.skill_writebacks import SkillStore
-from llm.factory import create_llm_client
-from orchestrator.graph import build_graph, configure_self_improvement
-from utils.config import CONFIG_PATH, load_config
+# Load .env from the project root BEFORE any VulkanMind module reads
+# ``os.environ`` for API keys (LLM factory, embedding client, etc.).
+# Loading relative to ``__file__`` rather than ``cwd`` keeps the lookup
+# deterministic regardless of where uvicorn was started from. ``override=False``
+# makes the loader additive only — values already exported in the real shell
+# environment win, since that's the standard 12-factor precedence.
+load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+
+# TEMP diagnostic: confirm the loader actually populated the key in this process.
+import os as _os  # noqa: E402
+
+print(f"[vm boot] NVIDIA_API_KEY={'present' if _os.environ.get('NVIDIA_API_KEY') else 'absent'} len={len(_os.environ.get('NVIDIA_API_KEY', ''))}", flush=True)  # noqa: E402
+
+# First-party imports follow the env loader by design — the LLM factory,
+# embedding client, etc. all read ``os.environ`` at module-import-time of their
+# own modules, so we must populate the env before they are imported.
+import agents.debugger.pattern_library as pattern_library  # noqa: E402
+from agents.self_improvement.memory_injector import MemoryInjector  # noqa: E402
+from agents.self_improvement.pattern_curator import PatternCurator  # noqa: E402
+from agents.self_improvement.prompt_refiner import PromptRefiner  # noqa: E402
+from agents.self_improvement.skill_extractor import SkillExtractor  # noqa: E402
+from db.bug_history import BugHistoryStore  # noqa: E402
+from db.build_queue_store import BuildQueueStore  # noqa: E402
+from db.execution_traces import ExecutionTraceStore  # noqa: E402
+from db.session_store import SessionStore  # noqa: E402
+from db.skill_writebacks import SkillStore  # noqa: E402
+from llm.factory import create_llm_client  # noqa: E402
+from orchestrator.graph import build_graph, configure_self_improvement  # noqa: E402
+from utils.config import CONFIG_PATH, load_config  # noqa: E402
 
 logger = structlog.get_logger("vulkanmind")
 
@@ -72,6 +90,7 @@ trace_store = ExecutionTraceStore(storage_path)
 skill_store = SkillStore(storage_path)
 
 llm_client = create_llm_client(config.get("llm"))
+print(f"[vm boot] llm_client after create_llm_client: {type(llm_client).__name__ if llm_client else 'None'}", flush=True)  # noqa: E402
 memory_injector = MemoryInjector(skill_store, trace_store)
 skill_extractor = SkillExtractor(llm_client, skill_store)
 prompt_refiner = PromptRefiner(llm_client, trace_store, skill_store)
@@ -133,6 +152,17 @@ def send_message(session_id: str, request: SessionMessageRequest) -> MessageResp
         "build_log": request.build_log,
         "target_platform_declared": target_declared,
         "agent_trace": [],
+        # Reset the per-turn self-improvement loop. These fields are persisted
+        # by the SqliteSaver checkpointer per ``thread_id``, so without an
+        # explicit reset the second message of a session would inherit
+        # ``self_improvement_phase="end"`` and ``session_memory!=None`` from
+        # the previous run — which causes ``self_improvement_node`` to skip
+        # ``router_node`` entirely and short-circuit straight to END.
+        "self_improvement_phase": "start",
+        "session_memory": None,
+        "improvement_context": None,
+        # Clear any stale error from previous turns
+        "error": None,
         # NOTE: ``memory_injector`` / ``llm_client`` / ``graphify_reader`` are
         # NOT carried in state — they are runtime collaborators kept in
         # module-scoped singletons (``graph._MEMORY_INJECTOR`` etc.). Pushing
@@ -262,6 +292,19 @@ def skills_stats() -> dict[str, Any]:
         "top_symptoms_resolved": trace_store.top_symptoms_resolved(),
         "avg_iterations_to_resolve": trace_store.average_iterations_to_resolve(),
     }
+
+
+class GraphPathRequest(BaseModel):
+    path: str
+
+
+@app.post("/graph/path")
+def set_graph_path(request: GraphPathRequest) -> dict[str, Any]:
+    from orchestrator.graph import set_graphify_path
+
+    if set_graphify_path(request.path):
+        return {"success": True, "path": request.path}
+    raise HTTPException(status_code=404, detail="graph.json not found at that path")
 
 
 def _qdrant_connected() -> bool:

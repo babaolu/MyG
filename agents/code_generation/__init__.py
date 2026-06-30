@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from orchestrator.state import PlatformContext
 
-from .agent import generate_vulkan_hpp_boilerplate
+from .agent import generate_code_for_request
 from .templates import cmake_for_platform
 from .validator import validate_cpp_source
 
@@ -56,7 +56,16 @@ def code_generation_node(state: dict) -> dict:
             "error": "platform_context is required before code generation",
             "agent_trace": state_model.agent_trace,
         }
-    generated_code = generate_vulkan_hpp_boilerplate(context)
+
+    # Try LLM-based generation if client is available
+    if state_model.llm_client is not None:
+        try:
+            generated_code = _generate_llm_code(state_model.user_request, context, state_model.llm_client)
+        except Exception:
+            generated_code = generate_code_for_request(state_model.user_request, context)
+    else:
+        generated_code = generate_code_for_request(state_model.user_request, context)
+
     cmake_snippet = cmake_for_platform(context)
     validation_passed, validation_output, build_log = validate_generated_code(generated_code, cmake_snippet, context)
     return {
@@ -67,3 +76,25 @@ def code_generation_node(state: dict) -> dict:
         "build_log": build_log,
         "agent_trace": state_model.agent_trace + ["code_generation_node generated Vulkan-Hpp/VMA code"],
     }
+
+
+def _generate_llm_code(user_request: str, context: PlatformContext, llm_client) -> str:
+    """Use LLM to generate Vulkan code for arbitrary requests."""
+    from llm.client import LLMMessage
+
+    vendor = context.target.gpu_vendor
+    quirks = ", ".join(f"{k}={v}" for k, v in context.target.quirk_profile.items())
+
+    system_prompt = f"""You are VulkanMind, a Vulkan graphics expert. Generate complete C++ code using Vulkan-Hpp for the user's request.
+
+Target platform: {vendor} GPU with quirks: {quirks}
+Include GLFW window setup, vertex buffers, shaders loading, and rendering loop.
+Return ONLY the C++ code, no explanations."""
+
+    messages = [
+        LLMMessage(role="system", content=system_prompt),
+        LLMMessage(role="user", content=f"Generate Vulkan C++ code to: {user_request}"),
+    ]
+
+    response = llm_client.complete(messages, max_tokens=4000)
+    return response.text

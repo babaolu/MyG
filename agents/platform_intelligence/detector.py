@@ -163,7 +163,23 @@ def detect_target_platform(user_declared: dict[str, Any] | None, adb_connected: 
             source="user_declared",
         )
 
-    raise PlatformContextError("target platform must be supplied by ADB or user declaration")
+    # Fall back to host-as-target (same-platform development)
+    host = detect_host_platform()
+    vendor = _normalize_vendor(host.os)
+    return TargetContext(
+        os=host.os,
+        arch=host.arch,
+        gpu_vendor=vendor,
+        gpu_model=host.os,
+        driver_version=None,
+        vulkan_version="1.0",
+        supported_extensions=[],
+        unsupported_extensions=[],
+        memory_heaps=[],
+        quirk_profile=get_quirk_profile(vendor, host.os),
+        auto_detected=True,
+        source="host_as_target",
+    )
 
 
 def determine_cross_compile(host: HostContext, target: TargetContext) -> ToolchainContext:

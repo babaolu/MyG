@@ -33,6 +33,7 @@ _SKILL_EXTRACTOR: SkillExtractor | None = None
 # and nodes read them back via ``get_runtime``.
 _LLM_CLIENT: Any | None = None
 _GRAPHIFY_READER: Any | None = None
+_GRAPHIFY_CONFIG: dict[str, Any] = {}
 _EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
 
@@ -57,8 +58,17 @@ def configure_self_improvement(
     _SKILL_STORE = skill_store or SkillStore(str(database_path))
     configure_pattern_store(_SKILL_STORE)
     _MEMORY_INJECTOR = memory_injector or MemoryInjector(_SKILL_STORE, _TRACE_STORE)
-    _LLM_CLIENT = llm_client
-    _GRAPHIFY_READER = graphify_reader
+    # ``_LLM_CLIENT`` and ``_GRAPHIFY_READER`` are runtime collaborators that
+    # may already be populated by an earlier call (e.g. ``main.py`` first
+    # configures them with concrete objects, then calls ``build_graph`` which
+    # would otherwise re-enter here with default args and silently clobber
+    # them back to ``None``). Treat each parameter as authoritative only when
+    # explicitly provided, so a follow-up call with all-default args is a
+    # no-op rather than an overwrite.
+    if llm_client is not None:
+        _LLM_CLIENT = llm_client
+    if graphify_reader is not None:
+        _GRAPHIFY_READER = graphify_reader
     if skill_extractor is not None:
         _SKILL_EXTRACTOR = skill_extractor
     else:
@@ -86,6 +96,28 @@ def get_runtime() -> dict[str, Any]:
         "llm_client": _LLM_CLIENT,
         "graphify_reader": _GRAPHIFY_READER,
     }
+
+
+def set_graphify_path(path: str | Path) -> bool:
+    """Switch the Graphify graph to a different path at runtime.
+
+    Returns ``True`` if the new path was loaded successfully, ``False`` if
+    the file does not exist. Updates ``_GRAPHIFY_READER`` atomically.
+    """
+    global _GRAPHIFY_READER, _GRAPHIFY_CONFIG
+    graph_path = Path(path)
+    if not graph_path.exists():
+        return False
+    from tools.graphify_reader import GraphifyReader
+
+    try:
+        _GRAPHIFY_READER = GraphifyReader(graph_path=graph_path)
+        _GRAPHIFY_CONFIG["graph_path"] = str(graph_path)
+        return True
+    except Exception as e:
+        import sys
+        print(f"[set_graphify_path] error: {e}", file=sys.stderr)
+        return False
 
 
 def self_improvement_node(state: VulkanMindState | dict) -> dict:

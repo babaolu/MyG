@@ -118,6 +118,28 @@ class VulkanMindClient:
         r.raise_for_status()
         return r.json()
 
+    def set_graph_path(self, path: str, save_generated: bool = True) -> dict[str, Any]:
+        graph_path = Path(path) / "graphify-out" / "graph.json"
+        r = self._http.post(
+            f"{self.base_url}/graph/path",
+            json={"path": str(graph_path)},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def save_generated_code(self, code: str, cmake: str, project_path: str | None) -> bool:
+        if project_path is None:
+            return False
+        proj = Path(project_path)
+        src_dir = proj / "src"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        (src_dir / "main.cpp").write_text(code, encoding="utf-8")
+        (proj / "CMakeLists.txt").write_text(cmake, encoding="utf-8")
+        return True
+
+    def close(self) -> None:
+        self._http.close()
+
 
 # ---------------------------------------------------------------------------
 # Output rendering
@@ -425,6 +447,7 @@ def run_shell(base_url: str) -> None:
     # Resume or start session
     session_id = _load_session()
     target_platform = None
+    _current_project: str | None = None  # Track current project path
 
     if session_id:
         console.print(f"[dim]Resuming session: {session_id}[/dim]")
@@ -598,21 +621,26 @@ def run_shell(base_url: str) -> None:
 
         if user_input.lower().startswith("/project "):
             project_path = user_input[9:].strip()
-            project_graph = Path(project_path) / "graphify-out" / "graph.json"
-            if not project_graph.exists():
+            try:
+                result = client.set_graph_path(project_path)
+                _current_project = project_path
                 console.print(
-                    f"[yellow]No graphify-out/graph.json found in {project_path}[/yellow]\n"
-                    f"Build it with:\n"
-                    f"  cd {project_path}\n"
-                    f"  graphify extract . --mode deep\n"
-                    f"  graphify hook install"
+                    f"[green]Switched Graphify graph to {result['path']}[/green]\n"
+                    f"[dim]Backend updated dynamically.[/dim]"
                 )
-            else:
-                os.environ["GRAPHIFY_GRAPH"] = str(project_graph)
-                console.print(
-                    f"[green]Switched Graphify graph to {project_graph}[/green]\n"
-                    f"[dim]Note: Restart VulkanMind backend to apply this change.[/dim]"
-                )
+                os.environ["GRAPHIFY_GRAPH"] = str(Path(project_path) / "graphify-out" / "graph.json")
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    console.print(
+                        f"[yellow]No graphify-out/graph.json found in {project_path}[/yellow]\n"
+                        f"Build it with:\n"
+                        f"  cd {project_path}\n"
+                        f"  graphify ."
+                    )
+                else:
+                    console.print(f"[red]Failed to switch project: {e}[/red]")
+            except httpx.HTTPError as e:
+                console.print(f"[red]Failed to switch project: {e}[/red]")
             continue
 
         if user_input.lower().startswith("/validation "):
@@ -648,6 +676,18 @@ def run_shell(base_url: str) -> None:
 
             console.print(Rule("[dim]vulkanmind[/dim]"))
             _render_response(response)
+
+            # Auto-save generated code to project directory if set
+            if _current_project and response.get("generated_code"):
+                saved = client.save_generated_code(
+                    response["generated_code"],
+                    response.get("cmake_snippet") or "",
+                    _current_project,
+                )
+                if saved:
+                    console.print(
+                        f"[dim]Generated code saved to {_current_project}/src/main.cpp[/dim]"
+                    )
 
         except httpx.HTTPError as e:
             console.print(f"[red]Request failed: {e}[/red]")
